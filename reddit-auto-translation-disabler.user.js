@@ -1,10 +1,14 @@
 // ==UserScript==
 // @name         Reddit Auto-Translation Disabler
 // @namespace    http://tampermonkey.net/
-// @version      1.1
-// @description  Disables Reddit's auto-translation feature and removes Google translation parameters
+// @version      1.3
+// @description  Disable Reddit Auto-Translation and Partially Restore Translated Titles in Google Search Results 
 // @author       NagaYZ
-// @match        https://www.reddit.com/*
+// @match        *://www.google.com/search*
+// @match        *://www.google.fr/search*
+// @match        *://www.google.*/search*
+// @match        *://www.reddit.com/*
+// @match        *://reddit.com/*
 // @grant        none
 // @run-at       document-start
 // @license      MIT
@@ -13,206 +17,402 @@
 (function() {
     'use strict';
 
-    // Remove Google translation parameter from URL
-    function removeTranslationParam() {
-        const url = new URL(window.location.href);
-        if (url.searchParams.has('tl')) {
-            url.searchParams.delete('tl');
-            window.location.replace(url.toString());
-            return true;
+    const isGoogleSearch = window.location.hostname.includes('google');
+    const isReddit = window.location.hostname.includes('reddit.com');
+
+    // ===== GOOGLE SEARCH: REDDIT TITLE RESTORER =====
+    if (isGoogleSearch) {
+        // Wait for document-end equivalent
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initGoogleScript);
+        } else {
+            initGoogleScript();
         }
-        return false;
-    }
 
-    // Check and remove translation parameter immediately
-    if (removeTranslationParam()) {
-        // Exit early if we're reloading to avoid running the rest of the script
-        return;
-    }
+        function initGoogleScript() {
+            // Function to extract title from Reddit URL
+            function extractTitleFromUrl(url) {
+                try {
+                    const cleanUrl = url.split('?')[0];
+                    const match = cleanUrl.match(/\/r\/[^\/]+\/comments\/[^\/]+\/([^\/]+)/);
 
-    // Flag to prevent infinite recursion
-    let settingCookie = false;
+                    if (match && match[1]) {
+                        let title = match[1];
 
-    // Function to set the translation cookie
-    function setTranslationCookie() {
-        if (settingCookie) return;
+                        // Decode URL encoding to handle special characters and accents
+                        title = decodeURIComponent(title);
 
-        settingCookie = true;
-        const cookieValue = JSON.stringify({
-            shouldDisplayCoachmark: false,
-            shouldDisplayFeedbackCoachmark: false,
-            coachmarkDisplayCount: 999,
-            showCommentTranslationModal: false,
-            showPostTranslationModal: false,
-            isTranslationActive: false,
-            translationEnabled: false,
-            autoTranslate: false
-        });
+                        // Replace underscores and hyphens with spaces
+                        title = title.replace(/[_-]/g, ' ');
 
-        document.cookie = `reddit_translation_status=${encodeURIComponent(cookieValue)}; path=/; domain=.reddit.com; max-age=31536000; SameSite=Lax`;
-        settingCookie = false;
-    }
+                        const smallWords = ['a', 'an', 'and', 'as', 'at', 'but', 'by', 'for', 'from', 'in', 'into', 'is', 'it', 'of', 'on', 'or', 'the', 'to', 'with',
+                                           'de', 'la', 'el', 'en', 'un', 'una', 'y', 'o', 'con', 'por', 'para'];
 
-    // Set cookie immediately
-    setTranslationCookie();
+                        title = title.split(' ')
+                            .map((word, index) => {
+                                // Always capitalize first word
+                                if (index === 0) {
+                                    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+                                }
 
-    // Intercept cookie modifications
-    const originalCookieSetter = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie').set;
-    const originalCookieGetter = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie').get;
+                                // Keep small words lowercase unless they start a sentence
+                                if (smallWords.includes(word.toLowerCase())) {
+                                    return word.toLowerCase();
+                                }
 
-    Object.defineProperty(document, 'cookie', {
-        set: function(value) {
-            // Only intercept if we're not already setting the cookie and it's a translation cookie
-            if (!settingCookie && value.includes('reddit_translation_status')) {
-                // Check if it's trying to enable translation
-                if (value.includes('isTranslationActive":true') ||
-                    value.includes('translationEnabled":true') ||
-                    value.includes('autoTranslate":true')) {
-                    // Set our disabled version instead
-                    setTranslationCookie();
-                    return;
+                                // Capitalize other words (handles accented characters properly)
+                                return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+                            })
+                            .join(' ');
+
+                        return title;
+                    }
+                } catch (e) {
+                    // Silently fail
                 }
+                return null;
             }
-            return originalCookieSetter.call(document, value);
-        },
-        get: function() {
-            return originalCookieGetter.call(document);
-        }
-    });
 
-    // Intercept fetch requests to block translation-related API calls
-    const originalFetch = window.fetch;
-    window.fetch = function(...args) {
-        const url = args[0];
-
-        // Block translation-related GraphQL requests
-        if (typeof url === 'string' && url.includes('/svc/shreddit/graphql')) {
-            try {
-                const body = args[1]?.body;
-                if (body && (body.includes('translate') || body.includes('translation'))) {
-                    // Return a fake successful response
-                    return Promise.resolve(new Response('{}', {
-                        status: 200,
-                        headers: { 'Content-Type': 'application/json' }
-                    }));
+            // Function to clean Reddit URLs
+            function cleanRedditUrl(url) {
+                if (!url || !url.includes('reddit.com')) {
+                    return url;
                 }
-            } catch (e) {
-                // Continue with normal fetch if there's an error
+
+                let cleanUrl = url;
+                cleanUrl = cleanUrl.replace(/[?&]tl=[^&]*/g, '');
+                cleanUrl = cleanUrl.replace(/[?&]translate=[^&]*/g, '');
+                cleanUrl = cleanUrl.replace(/[?&]translation=[^&]*/g, '');
+                cleanUrl = cleanUrl.replace(/[?&]$/, '');
+                cleanUrl = cleanUrl.replace(/&&+/g, '&');
+                cleanUrl = cleanUrl.replace(/\?&/, '?');
+
+                return cleanUrl;
             }
-        }
 
-        return originalFetch.apply(this, args);
-    };
+            // Function to restore Reddit titles
+            function restoreRedditTitles() {
+                const redditLinks = document.querySelectorAll('a[href*="reddit.com/r/"][href*="/comments/"]');
+                let restoredCount = 0;
 
-    // Intercept XMLHttpRequest as well
-    const originalXHRSend = XMLHttpRequest.prototype.send;
-    XMLHttpRequest.prototype.send = function(data) {
-        if (this._url && this._url.includes('/svc/shreddit/graphql')) {
-            try {
-                if (data && (data.includes('translate') || data.includes('translation'))) {
-                    // Don't send the request
-                    this.abort();
-                    return;
-                }
-            } catch (e) {
-                // Continue normally if there's an error
-            }
-        }
-        return originalXHRSend.apply(this, arguments);
-    };
+                redditLinks.forEach(link => {
+                    const originalHref = link.href;
+                    const cleanedHref = cleanRedditUrl(originalHref);
 
-    const originalXHROpen = XMLHttpRequest.prototype.open;
-    XMLHttpRequest.prototype.open = function(method, url) {
-        this._url = url;
-        return originalXHROpen.apply(this, arguments);
-    };
+                    if (originalHref !== cleanedHref) {
+                        link.href = cleanedHref;
+                    }
 
-    // Override localStorage translation settings
-    function overrideTranslationSettings() {
-        try {
-            const settings = {
-                translationEnabled: false,
-                autoTranslate: false,
-                translationLanguage: null,
-                isTranslationActive: false
-            };
+                    const titleElement = link.querySelector('h3');
 
-            // Check for any translation-related keys and override them
-            for (let key in localStorage) {
-                if (key.toLowerCase().includes('translat')) {
-                    localStorage.setItem(key, JSON.stringify(settings));
-                }
-            }
-        } catch (e) {
-            // Ignore errors
-        }
-    }
+                    if (titleElement && !titleElement.dataset.restored) {
+                        const originalTitle = extractTitleFromUrl(link.href);
 
-    // Run when DOM is ready
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', overrideTranslationSettings);
-    } else {
-        overrideTranslationSettings();
-    }
-
-    // Periodically check and disable translation
-    setInterval(() => {
-        setTranslationCookie();
-        overrideTranslationSettings();
-
-        // Also try to find and disable any translation toggles in the UI
-        try {
-            const translationToggles = document.querySelectorAll('[aria-label*="translat"], [data-testid*="translat"], button[class*="translat"]');
-            translationToggles.forEach(toggle => {
-                if (toggle.getAttribute('aria-checked') === 'true' || toggle.classList.contains('active')) {
-                    toggle.click();
-                }
-            });
-        } catch (e) {
-            // Ignore errors
-        }
-    }, 5000);
-
-    // Mutation observer to catch dynamically added translation elements
-    const observer = new MutationObserver((mutations) => {
-        mutations.forEach((mutation) => {
-            mutation.addedNodes.forEach((node) => {
-                if (node.nodeType === 1) { // Element node
-                    try {
-                        // Check if it's a translation-related element
-                        if (node.matches && (node.matches('[aria-label*="translat"], [data-testid*="translat"], button[class*="translat"]'))) {
-                            if (node.getAttribute('aria-checked') === 'true' || node.classList.contains('active')) {
-                                setTimeout(() => node.click(), 100);
-                            }
+                        if (originalTitle) {
+                            titleElement.dataset.translatedTitle = titleElement.textContent;
+                            titleElement.dataset.restored = 'true';
+                            titleElement.textContent = originalTitle;
+                            titleElement.style.fontStyle = 'normal';
+                            restoredCount++;
                         }
-                    } catch (e) {
-                        // Ignore errors
+                    }
+
+                    if (link.dataset.url) {
+                        link.dataset.url = cleanRedditUrl(link.dataset.url);
+                    }
+                });
+
+                // Clean citation URLs
+                const citeElements = document.querySelectorAll('cite');
+                citeElements.forEach(cite => {
+                    if (cite.textContent.includes('reddit.com') && cite.textContent.includes('tl=')) {
+                        cite.textContent = cleanRedditUrl(cite.textContent);
+                    }
+                });
+
+
+            }
+
+            // Add CSS
+            const style = document.createElement('style');
+            style.textContent = `
+                a[href*="reddit.com"] h3[data-restored="true"] {
+                    font-style: normal !important;
+                }
+            `;
+            document.head.appendChild(style);
+
+            // Run immediately
+            restoreRedditTitles();
+
+            // Intercept link clicks
+            document.addEventListener('click', (e) => {
+                const link = e.target.closest('a[href*="reddit.com"]');
+                if (link && link.href) {
+                    const cleanedHref = cleanRedditUrl(link.href);
+                    if (link.href !== cleanedHref) {
+                        link.href = cleanedHref;
                     }
                 }
+            }, true);
+
+            // MutationObserver for dynamic content
+            const observer = new MutationObserver((mutations) => {
+                let shouldProcess = false;
+
+                mutations.forEach((mutation) => {
+                    mutation.addedNodes.forEach((node) => {
+                        if (node.nodeType === 1) {
+                            if (node.matches && node.matches('a[href*="reddit.com"]')) {
+                                shouldProcess = true;
+                            } else if (node.querySelectorAll) {
+                                const redditLinks = node.querySelectorAll('a[href*="reddit.com"]');
+                                if (redditLinks.length > 0) {
+                                    shouldProcess = true;
+                                }
+                            }
+                        }
+                    });
+                });
+
+                if (shouldProcess) {
+                    setTimeout(restoreRedditTitles, 100);
+                }
+            });
+
+            const startObserver = () => {
+                if (document.body) {
+                    observer.observe(document.body, {
+                        childList: true,
+                        subtree: true
+                    });
+                } else {
+                    setTimeout(startObserver, 100);
+                }
+            };
+
+            startObserver();
+
+            // Periodic check
+            setInterval(restoreRedditTitles, 2000);
+
+            // Handle navigation
+            window.addEventListener('popstate', () => {
+                setTimeout(restoreRedditTitles, 200);
+            });
+
+            // Handle Google's dynamic navigation
+            const originalPushState = history.pushState;
+            const originalReplaceState = history.replaceState;
+
+            history.pushState = function() {
+                const result = originalPushState.apply(this, arguments);
+                setTimeout(restoreRedditTitles, 200);
+                return result;
+            };
+
+            history.replaceState = function() {
+                const result = originalReplaceState.apply(this, arguments);
+                setTimeout(restoreRedditTitles, 200);
+                return result;
+            };
+
+
+        }
+    }
+
+    // ===== REDDIT: AUTO-TRANSLATION DISABLER =====
+    if (isReddit) {
+        // Remove translation parameter from URL
+        const currentUrl = window.location.href;
+        const hasLanguageParam = currentUrl.includes('/?tl=');
+
+        if (hasLanguageParam) {
+            const cleanUrl = currentUrl.replace(/\/\?tl=[^&?]*(&|$)/, '/');
+            if (cleanUrl !== currentUrl) {
+                window.location.replace(cleanUrl);
+            }
+        }
+
+        let settingCookie = false;
+
+        // Function to set the translation cookie
+        function setTranslationCookie() {
+            if (settingCookie) return;
+
+            settingCookie = true;
+            const cookieValue = JSON.stringify({
+                shouldDisplayCoachmark: false,
+                shouldDisplayFeedbackCoachmark: false,
+                coachmarkDisplayCount: 999,
+                showCommentTranslationModal: false,
+                showPostTranslationModal: false,
+                isTranslationActive: false,
+                translationEnabled: false,
+                autoTranslate: false
+            });
+
+            document.cookie = `reddit_translation_status=${encodeURIComponent(cookieValue)}; path=/; domain=.reddit.com; max-age=31536000; SameSite=Lax`;
+            settingCookie = false;
+        }
+
+        setTranslationCookie();
+
+        // Intercept cookie modifications
+        const originalCookieSetter = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie').set;
+        const originalCookieGetter = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie').get;
+
+        Object.defineProperty(document, 'cookie', {
+            set: function(value) {
+                if (!settingCookie && value.includes('reddit_translation_status')) {
+                    if (value.includes('isTranslationActive":true') ||
+                        value.includes('translationEnabled":true') ||
+                        value.includes('autoTranslate":true')) {
+                        setTranslationCookie();
+                        return;
+                    }
+                }
+                return originalCookieSetter.call(document, value);
+            },
+            get: function() {
+                return originalCookieGetter.call(document);
+            }
+        });
+
+        // Intercept fetch requests
+        const originalFetch = window.fetch;
+        window.fetch = function(...args) {
+            const url = args[0];
+
+            if (typeof url === 'string' && url.includes('/svc/shreddit/graphql')) {
+                try {
+                    const body = args[1]?.body;
+                    if (body && (body.includes('translate') || body.includes('translation'))) {
+                        return Promise.resolve(new Response('{}', {
+                            status: 200,
+                            headers: { 'Content-Type': 'application/json' }
+                        }));
+                    }
+                } catch (e) {
+                    // Continue with normal fetch
+                }
+            }
+
+            return originalFetch.apply(this, args);
+        };
+
+        // Intercept XMLHttpRequest
+        const originalXHRSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.send = function(data) {
+            if (this._url && this._url.includes('/svc/shreddit/graphql')) {
+                try {
+                    if (data && (data.includes('translate') || data.includes('translation'))) {
+                        this.abort();
+                        return;
+                    }
+                } catch (e) {
+                    // Continue normally
+                }
+            }
+            return originalXHRSend.apply(this, arguments);
+        };
+
+        const originalXHROpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url) {
+            this._url = url;
+            return originalXHROpen.apply(this, arguments);
+        };
+
+        // Override localStorage translation settings
+        function overrideTranslationSettings() {
+            try {
+                const settings = {
+                    translationEnabled: false,
+                    autoTranslate: false,
+                    translationLanguage: null,
+                    isTranslationActive: false
+                };
+
+                for (let key in localStorage) {
+                    if (key.toLowerCase().includes('translat')) {
+                        localStorage.setItem(key, JSON.stringify(settings));
+                    }
+                }
+            } catch (e) {
+                // Ignore errors
+            }
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', overrideTranslationSettings);
+        } else {
+            overrideTranslationSettings();
+        }
+
+        // Periodic check and disable translation
+        setInterval(() => {
+            setTranslationCookie();
+            overrideTranslationSettings();
+
+            try {
+                const translationToggles = document.querySelectorAll('[aria-label*="translat"], [data-testid*="translat"], button[class*="translat"]');
+                translationToggles.forEach(toggle => {
+                    if (toggle.getAttribute('aria-checked') === 'true' || toggle.classList.contains('active')) {
+                        toggle.click();
+                    }
+                });
+            } catch (e) {
+                // Ignore errors
+            }
+        }, 5000);
+
+        // Mutation observer
+        const observer = new MutationObserver((mutations) => {
+            mutations.forEach((mutation) => {
+                mutation.addedNodes.forEach((node) => {
+                    if (node.nodeType === 1) {
+                        try {
+                            if (node.matches && (node.matches('[aria-label*="translat"], [data-testid*="translat"], button[class*="translat"]'))) {
+                                if (node.getAttribute('aria-checked') === 'true' || node.classList.contains('active')) {
+                                    setTimeout(() => node.click(), 100);
+                                }
+                            }
+                        } catch (e) {
+                            // Ignore errors
+                        }
+                    }
+                });
             });
         });
-    });
 
-    // Start observing when body is available
-    const startObserver = () => {
-        if (document.body) {
-            observer.observe(document.body, {
-                childList: true,
-                subtree: true
-            });
-        } else {
-            setTimeout(startObserver, 100);
-        }
-    };
+        const startObserver = () => {
+            if (document.body) {
+                observer.observe(document.body, {
+                    childList: true,
+                    subtree: true
+                });
+            } else {
+                setTimeout(startObserver, 100);
+            }
+        };
 
-    startObserver();
+        startObserver();
 
-    // Additional check for URL changes (for single-page navigation)
-    let lastUrl = window.location.href;
-    setInterval(() => {
-        if (window.location.href !== lastUrl) {
-            lastUrl = window.location.href;
-            removeTranslationParam();
-        }
-    }, 1000);
+        // Check for URL changes
+        let lastUrl = window.location.href;
+        setInterval(() => {
+            if (window.location.href !== lastUrl) {
+                lastUrl = window.location.href;
+                const currentUrl = window.location.href;
+                if (currentUrl.includes('/?tl=')) {
+                    const cleanUrl = currentUrl.replace(/\/\?tl=[^&?]*(&|$)/, '/');
+                    if (cleanUrl !== currentUrl) {
+                        window.location.replace(cleanUrl);
+                    }
+                }
+            }
+        }, 1000);
+
+
+    }
 })();
